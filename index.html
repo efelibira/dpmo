@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Polyphonic Synth</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body { background-color: #050505; color: #33ff33; font-family: monospace; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; touch-action: none; }
+        .synth-container { background: #111; padding: 2rem; border: 2px solid #33ff33; border-radius: 4px; text-align: center; width: 380px; display: flex; flex-direction: column; box-shadow: 0 0 20px rgba(51, 255, 51, 0.2); }
+        #visualizer { width: 340px; height: 100px; background: #000; border: 1px solid #33ff33; margin: 0 auto 20px auto; position: relative; }
+        select { width: 100%; padding: 12px; margin-bottom: 10px; background: #000; color: #33ff33; border: 1px solid #33ff33; font-family: monospace; cursor: pointer; }
+        
+        /* Glue Mod Butonu */
+        #glueToggle { width: 100%; padding: 10px; margin-bottom: 20px; background: #000; color: #33ff33; border: 1px solid #33ff33; cursor: pointer; font-family: monospace; }
+        #glueToggle.on { background: #33ff33; color: #000; }
+
+        .chord-grid { position: relative; width: 280px; height: 280px; margin: 20px auto; flex-shrink: 0; }
+        .chord-btn { position: absolute; width: 75px; height: 75px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #000; border: 2px solid #33ff33; color: #33ff33; font-weight: bold; transform: translate(-50%, -50%); cursor: pointer; transition: 0.1s; }
+        .chord-btn.active { background: #33ff33; color: #000; box-shadow: 0 0 15px #33ff33; }
+        
+        .controls-wrapper { display: flex; flex-direction: column; gap: 10px; }
+        .slider-group { text-align: left; background: #000; padding: 10px; border: 1px solid #33ff33; }
+        input[type="range"] { width: 100%; accent-color: #33ff33; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="synth-container">
+        <canvas id="visualizer"></canvas>
+        <select id="scaleSelect">
+            <option value="C-major">C Major</option>
+            <option value="A-minor">A Minor</option>
+            <option value="G-major">G Major</option>
+            <option value="E-minor">E Minor</option>
+        </select>
+        <button id="glueToggle">GLUE MODE: OFF</button>
+        <div id="chordContainer" class="chord-grid"></div>
+        <div class="controls-wrapper">
+            <div class="slider-group">
+                <label>Cutoff Frequency</label>
+                <input type="range" id="cutoffSlider" min="50" max="10000" value="10000" step="10">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.addEventListener('DOMContentLoaded', () => {
+            // 1. Audio Engine
+            const analyser = new Tone.Analyser("waveform", 1024);
+            const lowpassFilter = new Tone.Filter({ type: "lowpass", frequency: 10000, Q: 2 });
+            const polySynth = new Tone.PolySynth(Tone.Synth, {
+                portamento: 0.2, // Slide etkisi
+                oscillator: { type: "fatsawtooth", count: 3, spread: 20 },
+                envelope: { attack: 0.15, sustain: 0.8, release: 0.8 }
+            });
+            polySynth.chain(lowpassFilter, analyser, Tone.Destination);
+
+            // 2. Visualizer
+            const canvas = document.getElementById("visualizer");
+            const ctx = canvas.getContext("2d");
+            function draw() {
+                requestAnimationFrame(draw);
+                const values = analyser.getValue();
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.beginPath(); ctx.strokeStyle = "#33ff33"; ctx.lineWidth = 2;
+                for(let i=0; i<values.length; i++) {
+                    const x = (i / values.length) * canvas.width;
+                    const y = ((values[i] + 1) / 2) * canvas.height;
+                    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+            }
+            draw();
+
+            // 3. Logic
+            let isGlueMode = false;
+            let activeNotes = null, activeBtn = null, isDragging = false;
+            const container = document.getElementById('chordContainer');
+            const glueToggle = document.getElementById('glueToggle');
+
+            glueToggle.addEventListener('click', () => {
+                isGlueMode = !isGlueMode;
+                glueToggle.className = isGlueMode ? 'on' : '';
+                glueToggle.innerText = isGlueMode ? 'GLUE MODE: ON' : 'GLUE MODE: OFF';
+                if (!isGlueMode) stopChord();
+            });
+
+            function playChord(btn, notes) {
+                if (activeBtn === btn) return;
+                
+                // Eski notayı sustur
+                if (activeNotes) polySynth.triggerRelease(activeNotes);
+                
+                activeBtn = btn;
+                activeNotes = notes;
+                
+                document.querySelectorAll('.chord-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                polySynth.triggerAttack(notes);
+            }
+
+            function stopChord() {
+                if (activeNotes) { 
+                    polySynth.triggerRelease(activeNotes); 
+                    activeNotes = null; 
+                    activeBtn = null; 
+                    document.querySelectorAll('.chord-btn').forEach(b => b.classList.remove('active'));
+                }
+            }
+
+            // Pointer Events
+            const getBtnAt = (x, y) => document.elementFromPoint(x, y)?.closest('.chord-btn');
+            
+            window.addEventListener('pointerdown', async (e) => {
+                const btn = e.target.closest('.chord-btn');
+                if (btn) { isDragging = true; await Tone.start(); playChord(btn, btn.dataset.notes.split(',')); }
+            });
+
+            window.addEventListener('pointermove', (e) => {
+                if (!isDragging) return;
+                const btn = getBtnAt(e.clientX, e.clientY);
+                if (btn) playChord(btn, btn.dataset.notes.split(','));
+            });
+
+            window.addEventListener('pointerup', () => { 
+                isDragging = false; 
+                if (!isGlueMode) stopChord(); 
+            });
+
+            // Akor Render
+            const scalesData = {
+                "C-major": { chords: ["C", "Dm", "Em", "F", "G", "Am", "Bdim"], notes: [["C4", "E4", "G4"], ["D4", "F4", "A4"], ["E4", "G4", "B4"], ["F4", "A4", "C5"], ["G4", "B4", "D5"], ["A4", "C5", "E5"], ["B4", "D5", "F5"]] },
+                "A-minor": { chords: ["Am", "Bdim", "C", "Dm", "Em", "F", "G"], notes: [["A3", "C4", "E4"], ["B3", "D4", "F4"], ["C4", "E4", "G4"], ["D4", "F4", "A4"], ["E4", "G4", "B4"], ["F4", "A4", "C5"], ["G4", "B4", "D5"]] },
+                "G-major": { chords: ["G", "Am", "Bm", "C", "D", "Em", "F#dim"], notes: [["G3", "B3", "D4"], ["A3", "C4", "E4"], ["B3", "D4", "F#4"], ["C4", "E4", "G4"], ["D4", "F#4", "A4"], ["E4", "G4", "B4"], ["F#4", "A4", "C5"]] },
+                "E-minor": { chords: ["Em", "F#dim", "G", "Am", "Bm", "C", "D"], notes: [["E3", "G3", "B3"], ["F#3", "A3", "C4"], ["G3", "B3", "D4"], ["A3", "C4", "E4"], ["B3", "D4", "F#4"], ["C4", "E4", "G4"], ["D4", "F#4", "A4"]] }
+            };
+
+            function renderChords() {
+                container.innerHTML = '';
+                const data = scalesData[document.getElementById('scaleSelect').value];
+                data.chords.forEach((name, i) => {
+                    const btn = document.createElement('button');
+                    btn.className = 'chord-btn';
+                    btn.innerHTML = `<strong>${i+1}</strong>${name}`;
+                    btn.dataset.notes = data.notes[i];
+                    const angle = (i * (Math.PI * 2 / 7)) - Math.PI / 2;
+                    btn.style.left = `${140 + 105 * Math.cos(angle)}px`;
+                    btn.style.top = `${140 + 105 * Math.sin(angle)}px`;
+                    container.appendChild(btn);
+                });
+            }
+
+            document.getElementById('scaleSelect').addEventListener('change', renderChords);
+            document.getElementById('cutoffSlider').addEventListener('input', (e) => lowpassFilter.frequency.value = e.target.value);
+            renderChords();
+        });
+    </script>
+</body>
+</html>
